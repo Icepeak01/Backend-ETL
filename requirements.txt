@@ -1,0 +1,16 @@
+psycopg2-binary
+celery[redis]
+requests
+python-dotenv
+PyYAML
+flask
+apify-client
+bs4
+webdriver-manager
+beautifulsoup4
+fake_useragent
+pytz
+cloudscraper
+typing_extensions  # Instead of 'typing'
+snscrape  # Correct package name (only 2 's's)
+certifi

@@ -1,0 +1,24 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+
+  etl:
+    build: .
+    env_file: .env
+    depends_on:
+      - redis
+    volumes:
+      - .:/app
+    restart: on-failure
+    command:
+      - celery
+      - -A
+      - tasks
+      - worker
+      - "--beat"
+      - "--concurrency=${CELERY_CONCURRENCY:-10}"
+      - "--loglevel=info"
