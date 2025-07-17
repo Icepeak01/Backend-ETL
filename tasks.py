@@ -8,6 +8,9 @@ from celery import Celery
 from celery.schedules import crontab
 from pytz import timezone as pytz_tz
 
+
+
+# Import database helpers
 from utils.db_helpers import (
     fetch_users_where_last_fetched_is_null,
     fetch_users_where_last_fetched_older_than,
@@ -17,9 +20,13 @@ from utils.db_helpers import (
     insert_feefo_review,
     insert_google_maps_review,
     insert_reddit_post,
-    insert_facebook_post
+    insert_facebook_post,
+    insert_linkedin_post
 )
-from scrapers.twitter_scraper import fetch_tweets_for_company
+
+
+# Import scrapers
+from scrapers.twitter_scraper import fetch_twitter_mentions_for_user
 from scrapers.instagram_scraper import fetch_instagram_for_company
 from scrapers.trustpilot_scraper import fetch_trustpilot_page
 from scrapers.feefo_scraper import fetch_feefo_page
@@ -28,6 +35,7 @@ from scrapers.twitter2_scraper import fetch_tweets_for_user
 from scrapers.reddit_scraper import fetch_reddit_for_company
 from scrapers.twitter3_scraper import fetch_tweets_sn
 from scrapers.facebook_scraper import fetch_facebook_for_user
+from scrapers.linkedin_scraper import fetch_linkedin_posts_for_user
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -35,7 +43,8 @@ logger = logging.getLogger(__name__)
 redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
 celery = Celery("etl_tasks", broker=redis_url, backend=redis_url)
 
-# schedules from env
+
+# GENERAL SCARAPE SCHEDULES
 TP_HOURS = [int(h) for h in os.getenv("TP_GEN_SCHEDULE", "").split(",") if h]
 TW_HOURS = [int(h) for h in os.getenv("TWITTER_GEN_SCHEDULE", "").split(",") if h]
 IG_HOURS = [int(h) for h in os.getenv("IG_GEN_SCHEDULE", "").split(",") if h]
@@ -43,55 +52,66 @@ FEEFO_HOURS     = [int(h) for h in os.getenv("FEEFO_GEN_SCHEDULE", "").split(","
 GMAPS_HOURS      = [int(h) for h in os.getenv("GMAPS_GEN_SCHEDULE", "").split(",") if h]
 REDDIT_HOURS = [int(h) for h in os.getenv("REDDIT_GEN_SCHEDULE", "").split(",") if h]
 FB_HOURS = [int(h) for h in os.getenv("FB_GEN_SCHEDULE", "").split(",") if h]
+LI_HOURS = [int(h) for h in os.getenv("LI_GEN_SCHEDULE", "").split(",") if h]
+TWX_HOURS = [int(h) for h in os.getenv("TWX_GEN_SCHEDULE", "").split(",") if h]
 
 
 
-
-
-
-
+# PAGE VARIABLES
 GMAPS_MAX_REVIEWS = int(os.getenv("GMAPS_MAX_REVIEWS", "100"))
 FEEFO_MAX_PAGES = int(os.getenv("FEEFO_MAX_PAGES", "30"))
 MAX_TP = int(os.getenv("TP_MAX_PAGES", "30"))
 REDDIT_MAX_POSTS = int(os.getenv("REDDIT_MAX_POSTS", "30"))
 TWITTER3_MAX_TWEETS = int(os.getenv("TWITTER3_MAX_TWEETS", "100"))
 FB_MAX_POSTS = int(os.getenv("FB_MAX_POSTS", "100"))
+LI_GENERAL_LIMIT= int(os.getenv("LI_GENERAL_LIMIT", "20"))
+LI_CATCHUP_LIMIT = int(os.getenv("LI_CATCHUP_LIMIT", "100"))
+TMX_GENERAL_LIMIT = int(os.getenv("TMX_GENERAL_LIMIT", "20"))
+TMX_CATCHUP_LIMIT = int(os.getenv("TMX_CATCHUP_LIMIT", "100"))
+
+
+
+# CATCHUP SCHEDULES
 CATCHUP_CRON = os.getenv("CATCHUP_CRON", "*/5")
 CATCHUP_DT   = lambda: datetime.now(timezone.utc) - timedelta(days=30*4)
 LOCAL_TZ = pytz_tz(os.getenv("LOCAL_TIMEZONE", "UTC"))
 
+
 celery.conf.beat_schedule = {
-   # "tp-general": {"task": "tasks.tp_general",  "schedule": crontab(minute=0, hour=TP_HOURS)},
-   # "tp-catchup":{"task": "tasks.tp_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
-    #"tw-general": {"task": "tasks.tw_general",  "schedule": crontab(minute=0, hour=TW_HOURS)},
-    #"tw-catchup":{"task": "tasks.tw_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
+   #"tp-general": {"task": "tasks.tp_general",  "schedule": crontab(minute=0, hour=TP_HOURS)},
+   #"tp-catchup":{"task": "tasks.tp_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
     #"ig-general": {"task": "tasks.ig_general",  "schedule": crontab(minute=0, hour=IG_HOURS)},
     #"ig-catchup":{"task": "tasks.ig_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
-  #  "feefo-general": {"task": "tasks.feefo_general", "schedule": crontab(minute=0, hour=FEEFO_HOURS)},
-   # "feefo-catchup": {"task": "tasks.feefo_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
+    #"feefo-general": {"task": "tasks.feefo_general", "schedule": crontab(minute=0, hour=FEEFO_HOURS)},
+   #"feefo-catchup": {"task": "tasks.feefo_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
     #"gmaps-general": {"task": "tasks.gmaps_general", "schedule": crontab(minute=0, hour=GMAPS_HOURS)},
    # "gmaps-catchup": {"task": "tasks.gmaps_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
     #"tw2-general": {"task": "tasks.tw2_general", "schedule": crontab(minute=0, hour=TW_HOURS)},
     #"tw2-catchup": {"task": "tasks.tw2_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
     #"reddit-general": {"task": "tasks.reddit_general", "schedule": crontab(minute=0, hour=REDDIT_HOURS)},
-   # "reddit-catchup": {"task": "tasks.reddit_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
+   #"reddit-catchup": {"task": "tasks.reddit_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
     #"tw3-general": {"task": "tasks.tw3_general", "schedule": crontab(minute=0, hour=TW_HOURS)},
     #"tw3-catchup": {"task": "tasks.tw3_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
-    "fb-general": {"task": "tasks.fb_general", "schedule": crontab(minute=0, hour=FB_HOURS)},
-    "fb-catchup": {"task": "tasks.fb_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
+    #"fb-general": {"task": "tasks.fb_general", "schedule": crontab(minute=0, hour=FB_HOURS)},
+    #"fb-catchup": {"task": "tasks.fb_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
+    #"li-general": {"task": "tasks.li_general", "schedule": crontab(minute=0, hour=LI_HOURS)},
+    #"li-catchup": {"task": "tasks.li_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
+    "twx_general": {"task": "tasks.twx_general", "schedule": crontab(minute=0, hour=TWX_HOURS)},
+    "twx_catchup": {"task": "tasks.twx_catchup", "schedule": crontab(minute=CATCHUP_CRON)},
 }
 
 def _cutoff(minutes=40):
     return datetime.now(LOCAL_TZ) - timedelta(minutes=minutes)
 
-# — Trustpilot General —
+
+
+# — Trustpilot General & Catchup —
 @celery.task(bind=True, max_retries=3, name="tasks.tp_general")
 def tp_general(self):
     users = fetch_users_where_last_fetched_older_than("trustpilot", _cutoff())
     for u in users:
         tp_scrape_general.delay(u["id"], u["company_name"], u["company_web_address"])
 
-# — Trustpilot Catchup —
 @celery.task(bind=True, max_retries=3, name="tasks.tp_catchup")
 def tp_catchup(self):
     users = fetch_users_where_last_fetched_is_null("trustpilot")
@@ -135,33 +155,74 @@ def tp_scrape_catchup(self, uid, name, web):
 
 
 # — Twitter General & Catchup —
-@celery.task(bind=True, name="tasks.tw_general")
-def tw_general(self):
-    users = fetch_users_where_last_fetched_older_than("twitter", _cutoff())
+@celery.task(bind=True, name="tasks.twx_general")
+def twx_general(self):
+    """
+    Incremental: scrape all mentions since last_fetched_twitter for each user.
+    """
+    users = fetch_users_where_last_fetched_older_than("twitter", datetime.utcnow())
     for u in users:
-        tw_scrape_general.delay(u["id"], u["company_name"])
+        twx_scrape_general.delay(
+            u["id"],
+            u["company_name"],
+            u.get("twitter_username"),
+            u.get("last_fetched_twitter"),
+        )
 
-@celery.task(bind=True, name="tasks.tw_catchup")
-def tw_catchup(self):
+@celery.task(bind=True, name="tasks.twx_catchup")
+def twx_catchup(self):
+    """
+    One-off catchup: scrape the last 90 days for brand-new users.
+    """
+    cutoff = datetime.utcnow() - timedelta(days=90)
     users = fetch_users_where_last_fetched_is_null("twitter")
     for u in users:
-        tw_scrape_catchup.delay(u["id"], u["company_name"])
+        twx_scrape_catchup.delay(
+            u["id"],
+            u["company_name"],
+            u.get("twitter_username"),
+            cutoff,
+        )
 
-@celery.task(bind=True, max_retries=3, name="tasks.tw_scrape_general")
-def tw_scrape_general(self, uid, name):
-    tweets = fetch_tweets_for_company(name, since_id=None)
-    for t in tweets: insert_twitter_mention(t)
-    if tweets:
-        update_user_fetched(uid, "twitter")
-        logger.info(f"[TW] scraped {len(tweets)} for {uid}")
+@celery.task(bind=True, max_retries=3, name="tasks.twx_scrape_general")
+def twx_scrape_general(self, uid, company_name, twitter_username, since_dt):
+    if not twitter_username:
+        logger.warning(f"[TWX] skip {uid} (no twitter_username)")
+        return 0
+    try:
+        count = fetch_twitter_mentions_for_user(
+            company_name=company_name,
+            twitter_username=twitter_username,
+            since_dt=since_dt,
+        )
+        if count:
+            update_user_fetched(uid, "twitter")
+        return count
+    except Exception as e:
+        logger.error(f"[TWX][{uid}] general scrape failed: {e}")
+        raise self.retry(exc=e, countdown=300)
 
-@celery.task(bind=True, max_retries=3, name="tasks.tw_scrape_catchup")
-def tw_scrape_catchup(self, uid, name):
-    tweets = fetch_tweets_for_company(name, since_id=None)
-    for t in tweets: insert_twitter_mention(t)
-    if tweets:
-        update_user_fetched(uid, "twitter")
-        logger.info(f"[TW] catchup scraped {len(tweets)} for {uid}")
+@celery.task(bind=True, max_retries=3, name="tasks.twx_scrape_catchup")
+def twx_scrape_catchup(self, uid, company_name, twitter_username, since_dt):
+    if not twitter_username:
+        logger.warning(f"[TWX] skip {uid} (no twitter_username)")
+        return 0
+    try:
+        count = fetch_twitter_mentions_for_user(
+            company_name=company_name,
+            twitter_username=twitter_username,
+            since_dt=since_dt,
+        )
+        if count:
+            update_user_fetched(uid, "twitter")
+        return count
+    except Exception as e:
+        logger.error(f"[TWX][{uid}] catchup scrape failed: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+
+
+
 
 # — Instagram General & Catchup —
 @celery.task(bind=True, name="tasks.ig_general")
@@ -240,7 +301,6 @@ def feefo_general(self):
         )
 
 
-
 @celery.task(bind=True, max_retries=3, name="tasks.feefo_catchup")
 def feefo_catchup(self):
     users = fetch_users_where_last_fetched_is_null("feefo")
@@ -250,7 +310,6 @@ def feefo_catchup(self):
             u["company_name"],
             u.get("feefo_business_info"),
         )
-
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.feefo_scrape_general")
@@ -268,8 +327,6 @@ def feefo_scrape_general(self, uid, company_name, feefo_slug):
     except Exception as e:
         logger.error(f"[Feefo][{uid}] general scrape failed: {e}")
         self.retry(exc=e, countdown=300)
-
-
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.feefo_scrape_catchup")
@@ -290,7 +347,6 @@ def feefo_scrape_catchup(self, uid, company_name, feefo_slug):
 
 
 # — Google Maps General & Catchup —
-
 @celery.task(bind=True, max_retries=3, name="tasks.gmaps_general")
 def gmaps_general(self):
     users = fetch_users_where_last_fetched_older_than("google_maps", _cutoff())
@@ -311,7 +367,6 @@ def gmaps_catchup(self):
             u["company_name"],
             u["place_url"],
         )
-
 
 
 @celery.task(bind=True, max_retries=3, name="tasks.gmaps_scrape_general")
@@ -553,6 +608,8 @@ def tw3_scrape_catchup(self, uid, company_name, twitter_username):
         raise self.retry(exc=e, countdown=300)
 
 
+
+
 # --- Facebook General & Catchup ---
 @celery.task(bind=True, name="tasks.fb_general")
 def fb_general(self):
@@ -575,7 +632,8 @@ def fb_catchup(self):
           fb_username=u.get("facebook_username")
         )
 
-@celery.task(bind=True, max_retries=3, name="tasks.fb_scrape_general")
+
+@celery.task(bind=True, name="tasks.fb_scrape_general")
 def fb_scrape_general(self, uid, company_name, fb_username, last_fetched):
     if not fb_username:
         logger.warning(f"[FB] skip user {uid} (no facebook_username)")
@@ -589,16 +647,71 @@ def fb_scrape_general(self, uid, company_name, fb_username, last_fetched):
         logger.error(f"[FB][{uid}] general scrape failed: {e}")
         raise self.retry(exc=e, countdown=300)
 
-@celery.task(bind=True, max_retries=3, name="tasks.fb_scrape_catchup")
+
+@celery.task(bind=True, name="tasks.fb_scrape_catchup")
 def fb_scrape_catchup(self, uid, company_name, fb_username):
     if not fb_username:
         logger.warning(f"[FB] skip user {uid} (no facebook_username)")
         return
     try:
+        # since_dt=None will make it go back `CATCHUP_MOS` months
         cnt = fetch_facebook_for_user(company_name, fb_username, since_dt=None)
         if cnt:
             update_user_fetched(uid, "facebook")
             logger.info(f"[FB] catchup scraped {cnt} posts for {uid}")
     except Exception as e:
         logger.error(f"[FB][{uid}] catchup scrape failed: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+
+
+# --- LinkedIn General & Catchup ---
+
+@celery.task(bind=True, name="tasks.li_general")
+def li_general(self):
+    users = fetch_users_where_last_fetched_older_than("linkedin", CATCHUP_DT())
+    for u in users:
+        li_scrape_general.delay(
+            uid=u["id"],
+            company_name=u["company_name"],
+            linkedin_username=u.get("linkedin_username"),
+            last_fetched=u.get("last_fetched_linkedin")
+        )
+
+@celery.task(bind=True, name="tasks.li_catchup")
+def li_catchup(self):
+    users = fetch_users_where_last_fetched_is_null("linkedin")
+    for u in users:
+        li_scrape_catchup.delay(
+            uid=u["id"],
+            company_name=u["company_name"],
+            linkedin_username=u.get("linkedin_username")
+        )
+
+@celery.task(bind=True, max_retries=3, name="tasks.li_scrape_general")
+def li_scrape_general(self, uid, company_name, linkedin_username, last_fetched):
+    if not linkedin_username:
+        logger.warning(f"[LI] skip user {uid} (no linkedin_username)")
+        return
+    try:
+        cnt = fetch_linkedin_posts_for_user(company_name, linkedin_username, since_dt=last_fetched)
+        if cnt:
+            update_user_fetched(uid, "linkedin")
+            logger.info(f"[LI] general scraped {cnt} posts for {uid}")
+    except Exception as e:
+        logger.error(f"[LI][{uid}] general scrape failed: {e}")
+        raise self.retry(exc=e, countdown=300)
+
+@celery.task(bind=True, max_retries=3, name="tasks.li_scrape_catchup")
+def li_scrape_catchup(self, uid, company_name, linkedin_username):
+    if not linkedin_username:
+        logger.warning(f"[LI] skip user {uid} (no linkedin_username)")
+        return
+    try:
+        cnt = fetch_linkedin_posts_for_user(company_name, linkedin_username, since_dt=None)
+        if cnt:
+            update_user_fetched(uid, "linkedin")
+            logger.info(f"[LI] catchup scraped {cnt} posts for {uid}")
+    except Exception as e:
+        logger.error(f"[LI][{uid}] catchup scrape failed: {e}")
         raise self.retry(exc=e, countdown=300)

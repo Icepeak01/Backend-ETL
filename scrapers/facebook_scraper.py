@@ -1,52 +1,45 @@
+import os, time, requests
 from datetime import datetime, timedelta, timezone
-import requests
-import certifi
-import time
-import os
-from dotenv import load_dotenv
 from utils.db_helpers import insert_facebook_post
 
-load_dotenv()
+API_TOKEN    = os.getenv("APIFY_API_TOKEN")
+ACTOR_ID     = os.getenv("APIFY_FACEBOOK_ACTOR", "apify/facebook-posts-scraper")
+ACTOR_BASE   = "https://api.apify.com/v2/acts"
+DATASET_BASE = "https://api.apify.com/v2/datasets"
 
-API_TOKEN      = os.getenv("APIFY_API_TOKEN")
-ACTOR_ID       = os.getenv("APIFY_FACEBOOK_ACTOR", "alien_force~facebook-scraper-pro")
-BASE_URL       = "https://api.apify.com/v2/acts"
-MAX_POSTS      = int(os.getenv("FB_MAX_POSTS", "100"))
-CATCHUP_MONTHS = 4
+MAX_POSTS    = int(os.getenv("FB_MAX_POSTS",     "100"))
+CATCHUP_MOS  = int(os.getenv("FB_CATCHUP_MONTHS", "3"))
 
 HEADERS = {
     "Authorization": f"Bearer {API_TOKEN}",
-    "Content-Type":  "application/json"
+    "Content-Type":  "application/json",
 }
 
-def _run_actor(page_url, facebook_username, since_iso):
-    endpoint = f"{BASE_URL}/{ACTOR_ID}/runs?token={API_TOKEN}"
-    
-    # Dynamically set the 'since' parameter for date filtering based on the scrape type
-    if since_iso:
-        # If a specific 'since' date is provided (e.g., from last_fetched)
-        since = since_iso
-    else:
-        # For catchup scrape, calculate from 4 months ago
-        since = (datetime.now(timezone.utc) - timedelta(days=30*CATCHUP_MONTHS)).isoformat()
-    
+
+def _run_actor(page_url: str, since_iso: str | None) -> str:
+    actor_path = ACTOR_ID.replace("/", "~")
+    endpoint   = f"{ACTOR_BASE}/{actor_path}/runs?token={API_TOKEN}"
+
     payload = {
-        "startUrls": [{"url": page_url}],
-        "results_limit": MAX_POSTS,  # Limit number of posts
-        "since": since,  # Use dynamic date filtering
-        "keyword": facebook_username,  # Set facebook_username as the keyword
-        "filter_by_recent_posts": False,  # Optional: Whether to filter by recent posts
-        "min_wait_time_in_sec": 1,  # Optional: Minimum wait time between requests
-        "max_wait_time_in_sec": 4,  # Optional: Maximum wait time between requests
-        "cookies": []  # Optional: Add any necessary cookies
+      "startUrls":    [{"url": page_url}],
+      "resultsLimit": MAX_POSTS,
+      "maxRequestRetries": 3,
+      # disable Apify Proxy if you don’t have credit:
+      "proxy": {
+    "useApifyProxy": True,
+    "apifyProxyGroups": ["RESIDENTIAL"]  # optional
+  },
+      # only include "since" when you want it
+      **({"since": since_iso} if since_iso else {})
     }
 
     resp = requests.post(endpoint, headers=HEADERS, json=payload)
     resp.raise_for_status()
     return resp.json()["data"]["id"]
 
-def _fetch_results(run_id):
-    status_url = f"{BASE_URL}/{ACTOR_ID}/runs/{run_id}?token={API_TOKEN}"
+
+def _fetch_results(run_id: str) -> list[dict]:
+    status_url = f"{ACTOR_BASE}/{ACTOR_ID.replace('/', '~')}/runs/{run_id}?token={API_TOKEN}"
     while True:
         r = requests.get(status_url, headers=HEADERS)
         r.raise_for_status()
@@ -54,50 +47,75 @@ def _fetch_results(run_id):
         if data["status"] == "SUCCEEDED":
             break
         if data["status"] == "FAILED":
-            raise RuntimeError(f"Actor run {run_id} failed")
+            raise RuntimeError(f"Actor run {run_id} failed: {data.get('error')}")
         time.sleep(2)
 
-    ds = data["defaultDatasetId"]
-    items_url = f"https://api.apify.com/v2/datasets/{ds}/items?token={API_TOKEN}"
-    items = requests.get(items_url, headers=HEADERS)
-    items.raise_for_status()
-    return items.json()
+    ds         = data["defaultDatasetId"]
+    items_url  = f"{DATASET_BASE}/{ds}/items?token={API_TOKEN}"
+    items_resp = requests.get(items_url, headers=HEADERS)
+    items_resp.raise_for_status()
+    return items_resp.json()
 
-def fetch_facebook_for_user(company_name: str,
-                            facebook_username: str,
-                            since_dt: datetime = None) -> int:
-    """
-    - company_name: your Users.company_name
-    - facebook_username: Users.facebook_username
-    - since_dt: datetime of last_fetched_facebook; if None, defaults to now - CATCHUP_MONTHS
-    """
+def fetch_facebook_for_user(
+    company_name: str,
+    facebook_username: str,
+    since_dt: datetime | None = None
+) -> int:
+    # 1) Build the ISO or cutoff
     if since_dt:
         since_iso = since_dt.astimezone(timezone.utc).isoformat()
     else:
-        # For catchup scraping (last 4 months)
-        since_iso = (datetime.now(timezone.utc) - timedelta(days=30*CATCHUP_MONTHS)).isoformat()
+        cutoff    = datetime.now(timezone.utc) - timedelta(days=30*CATCHUP_MOS)
+        since_iso = cutoff.isoformat()
 
+    # 2) Kick off the actor
     page_url = f"https://www.facebook.com/{facebook_username}"
-    run_id   = _run_actor(page_url, facebook_username, since_iso)
-    posts    = _fetch_results(run_id)
+    run_id   = _run_actor(page_url, since_iso)
 
+    # 3) Poll until it's done and pull the JSON
+    posts = _fetch_results(run_id)
+
+    # 4) Insert each post
     count = 0
     for itm in posts:
+        # — unwrap the very first mention in textReferences (if any)
+        author_name = None
+        text_refs = itm.get("textReferences") or []
+        if isinstance(text_refs, list) and text_refs:
+            tr = text_refs[0]
+            author_name = tr.get("short_name") or tr.get("shortname")
+
+        # — unwrap the very first image in media (if any)
+        image_url = None
+        media_list = itm.get("media") or []
+        for m in media_list:
+            if isinstance(m, dict) and m.get("photo_image"):
+                image_url = m["photo_image"].get("url")
+                break
+            if isinstance(m, dict) and m.get("image"):
+                image_url = m["image"].get("uri") or m["image"].get("url")
+                break
+
         post = {
-          "post_id":           itm.get("id"),
-          "company_name":      company_name,
-          "facebook_username": facebook_username,
-          "message":           itm.get("message"),
-          "created_at":        itm.get("createdAt"),
-          "reactions_count":   itm.get("reactionsCount"),
-          "comments_count":    itm.get("commentsCount"),
-          "share_count":       itm.get("sharedCount"),
-          "post_url":          itm.get("postUrl"),
+            "post_id":           itm.get("postFacebookId") or itm.get("postId"),
+            "company_name":      company_name,
+            "facebook_username": facebook_username,
+            "author_name":       author_name,
+            "message":           itm.get("text"),
+            "created_at":        itm.get("time"),
+            "reactions_count":   itm.get("likes"),
+            "comments_count":    itm.get("comments"),
+            "share_count":       itm.get("shares"),
+            "image":             image_url,
+            "post_url":          itm.get("url"),
         }
+
+        # skip if no ID or time
         if not post["post_id"] or not post["created_at"]:
             continue
+
         insert_facebook_post(post)
         count += 1
 
-    print(f"[FB] inserted {count} posts for {facebook_username}")
+    print(f"[FB] Inserted {count} posts for {facebook_username}")
     return count

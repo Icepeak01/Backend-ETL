@@ -52,7 +52,7 @@ def fetch_users_where_last_fetched_is_null(platform: str):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(f"""
-                SELECT id, company_name, company_web_address, instagram_username, twitter_username, feefo_business_info, place_url, last_fetched_twitter3, facebook_username, last_fetched_facebook, {col}
+                SELECT id, company_name, company_web_address, instagram_username, twitter_username, feefo_business_info, place_url, last_fetched_twitter3, facebook_username, last_fetched_facebook, last_fetched_linkedin, linkedin_username, {col}
                   FROM users
                  WHERE {col} IS NULL
             """)
@@ -67,7 +67,7 @@ def fetch_users_where_last_fetched_older_than(platform: str, cutoff_time):
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(f"""
-                SELECT id, company_name, company_web_address, instagram_username, twitter_username, feefo_business_info, place_url, last_fetched_twitter3, facebook_username, last_fetched_facebook, {col}
+                SELECT id, company_name, company_web_address, instagram_username, twitter_username, feefo_business_info, place_url, last_fetched_twitter3, facebook_username, last_fetched_facebook, last_fetched_linkedin, linkedin_username, {col}
                   FROM users
                  WHERE {col} < %s
             """, (cutoff_time,))
@@ -95,10 +95,9 @@ def insert_twitter_mention(tweet: dict):
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO twitter_mentions
-                  (tweet_id, company_name, text, author_handle, created_at, reply_count, fetched_at)
+                  (tweet_id, company_name, twitter_url, text, author_handle, created_at, reply_count, retweet_count, like_count, view_count, image, videourl, fetched_at)
                 VALUES
-                  (%(tweet_id)s, %(company_name)s, %(text)s, %(author_handle)s,
-                   %(created_at)s, %(reply_count)s, NOW())
+                  (%(tweet_id)s, %(company_name)s,%(twitter_url)s, %(text)s, %(author_handle)s, %(created_at)s, %(reply_count)s, %(retweet_count)s, %(like_count)s, %(view_count)s, %(image)s, %(videourl)s, NOW())
                 ON CONFLICT (tweet_id) DO NOTHING;
             """, tweet)
             conn.commit()
@@ -173,8 +172,6 @@ def insert_feefo_review(review: dict):
             conn.commit()
     finally:
         _release_pooled_conn(conn)
-
-
 
 
 def insert_google_maps_review(review: dict):
@@ -261,14 +258,44 @@ def insert_facebook_post(post: dict):
             cur.execute("""
                 INSERT INTO facebook_posts
                   (post_id, company_name, facebook_username, message,
-                   created_at, reactions_count, comments_count,
+                   created_at, reactions_count, comments_count, author_name, image,
                    share_count, post_url, fetched_at)
                 VALUES
                   (%(post_id)s, %(company_name)s, %(facebook_username)s, %(message)s,
-                   %(created_at)s, %(reactions_count)s, %(comments_count)s,
+                   %(created_at)s, %(reactions_count)s, %(comments_count)s, %(author_name)s, %(image)s,
                    %(share_count)s, %(post_url)s, NOW())
                 ON CONFLICT (post_id) DO NOTHING;
             """, post)
             conn.commit()
     finally:
         _release_pooled_conn(conn)
+
+
+# Insert LinkedIn
+def insert_linkedin_post(post: dict):
+    conn = _get_pooled_conn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO linkedin_posts
+                  (company_name, urn, text, url, posted_at_iso, posted_at_ts,
+                   author_name, author_profile_id, author_headline,
+                   image,
+                   total_reactions, like_count, support, love, insight, celebrate,
+                   comments_count, reposts,
+                   type, fetched_at)
+                VALUES
+                  (%(company_name)s, %(urn)s, %(text)s, %(url)s,
+                   %(posted_at_iso)s, to_timestamp(%(posted_at_ts)s),
+                   %(author_name)s, %(author_profile_id)s,
+                   %(author_headline)s, %(image)s,
+                   %(total_reactions)s, %(like_count)s, %(support)s,
+                   %(love)s, %(insight)s, %(celebrate)s,
+                   %(comments_count)s, %(reposts)s,
+                   %(type)s, NOW())
+                ON CONFLICT (company_name, urn) DO NOTHING;
+            """, post)
+            conn.commit()
+    finally:
+        _release_pooled_conn(conn)
+
